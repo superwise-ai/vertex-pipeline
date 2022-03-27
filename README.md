@@ -16,7 +16,7 @@ Prerequisites:
 - Superwise Account
 - following environment variables:
 	- REGION - GCP region
-	- PROJECT_ID - GCP project id ( can be retrieved using `gcloud config list --format 'value(core.project)' 2>/dev/null` )
+	- PROJECT_ID - GCP project id ( can be retrieved using `gcloud config list --format 'value(core.project)'` )
 	- BUCKET_NAME - name of GCS bucket
 	- SUPERWISE_CLIENT_ID - retrieved from Superwise's platform
 	- SUPERWISE_SECRET - retrieved from Superwise's platform
