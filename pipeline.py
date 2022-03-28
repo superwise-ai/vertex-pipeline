@@ -1,3 +1,4 @@
+from nis import cat
 from typing import List, NamedTuple
 from datetime import datetime
 
@@ -5,18 +6,19 @@ from kfp.v2 import compiler, dsl
 from kfp.v2.dsl import component, pipeline, Input, Output, Model, Metrics, Dataset, HTML
 
 from google.cloud import aiplatform, storage
+from sklearn.impute import SimpleImputer
 
 
-REGION = os.environ["REGION"]
-PROJECT_ID = os.environ["PROJECT_ID"]
-BUCKET_NAME = f"gs://{os.environ['BUCKET_NAME']}"
+REGION = "us-central1"
+PROJECT_ID = "tmls-demo"
+BUCKET_NAME = f"gs://tmls-demo-bucket-pipeline"
 TIMESTAMP = datetime.now().strftime("%Y%m%d%H%M%S")
 
 API_ENDPOINT = "{}-aiplatform.googleapis.com".format(REGION)
 PIPELINE_ROOT = "{}/pipeline_root/demo_2".format(BUCKET_NAME)
 
-SUPERWISE_CLIENT_ID = os.environ["SUPERWISE_CLIENT_ID"]
-SUPERWISE_SECRET = os.environ["SUPERWISE_SECRET"]
+SUPERWISE_CLIENT_ID = "40bddc7a-c047-4e74-afee-101be24d14c2"
+SUPERWISE_SECRET = "67d954f2-cb52-4cc9-915e-b7399e5d85ab"
 
 
 @component(packages_to_install=["pandas"])
@@ -24,7 +26,7 @@ def load_data(dataset: Output[Dataset]):
     import pandas as pd
 
     df = pd.read_csv("https://www.openml.org/data/get_csv/21792853/dataset")
-    df = df[df["price"] < 10000]  ## Choose <10000$ diamonds to produce concept drift
+    df = df[df["price"] < 10000]
     print("Load Data: ", df.head())
     df.to_csv(dataset.path, index=False)
 
@@ -90,13 +92,13 @@ def prepare_data(
 def train_model(
     X_train: Input[Dataset],
     y_train: Input[Dataset],
-    params_rff: dict,
     model_artifact: Output[Model],
 ):
     import joblib
     import pandas as pd
 
     from sklearn.pipeline import Pipeline
+    from sklearn.impute import SimpleImputer
     from sklearn.compose import ColumnTransformer
     from sklearn.preprocessing import StandardScaler, OneHotEncoder, OrdinalEncoder
     from sklearn.ensemble import RandomForestRegressor
@@ -109,34 +111,50 @@ def train_model(
     # ID column - needed to support predict() over numpy arrays
     ID = ["record_id"]
     ALL_COLUMNS = ID + NUMERIC_FEATURES + CATEGORICAL_FEATURES
-    # Define the index position of each feature. This is needed for processing a
-    # numpy array (instead of pandas) which has no column names.
-    numeric_features_idx = list(range(1, len(NUMERIC_FEATURES) + 1))
-    categorical_features_idx = list(range(len(NUMERIC_FEATURES) + 1, len(ALL_COLUMNS)))
 
     X, y = pd.read_csv(X_train.path), pd.read_csv(y_train.path)
     X = X.loc[:, ALL_COLUMNS]
     print("Trainning model X:", X.head(), "Y: ", y.head())
+    numeric_transformer = Pipeline(
+        steps=[
+            ("imputer", SimpleImputer(strategy="median")),
+            ("scaler", StandardScaler()),
+        ]
+    )
+
+    categorical_transformer = Pipeline(
+        steps=[
+            ("imputer", SimpleImputer(strategy="most_frequent")),
+            ("cat", OneHotEncoder(handle_unknown="ignore")),
+        ]
+    )
+
     preprocessor = ColumnTransformer(
         transformers=[
-            ("num", StandardScaler(), numeric_features_idx),
-            ("cat", OneHotEncoder(handle_unknown="ignore"), categorical_features_idx),
+            ("num", numeric_transformer, NUMERIC_FEATURES),
+            ("cat", categorical_transformer, CATEGORICAL_FEATURES),
         ],
         remainder="drop",
         n_jobs=-1,
     )
-
     # We now create a full pipeline, for preprocessing and training.
     # for training we selected a RandomForestRegressor
-    regressor = RandomForestRegressor()
-    regressor.set_params(**params_rff)
+    model_params = {
+        "max_features": "auto",
+        "n_estimators": 500,
+        "max_depth": 9,
+        "random_state": 42,
+    }
 
+    regressor = RandomForestRegressor()
+    regressor.set_params(**model_params)
+    # steps=[('i', SimpleImputer(strategy='median'))
     pipeline = Pipeline(
         steps=[("preprocessor", preprocessor), ("regressor", regressor)]
     )
-
+    # For Workshop time efficiency we will use 1-fold cross validation
     score = cross_val_score(
-        pipeline, X, y, cv=5, scoring="neg_root_mean_squared_error", n_jobs=-1
+        pipeline, X, y, cv=10, scoring="neg_root_mean_squared_error", n_jobs=-1
     ).mean()
     print("finished cross val")
     # Now we fit all our data to the classifier.
@@ -164,6 +182,7 @@ def evaluate_model(
     import seaborn as sns
     import pandas as pd
     import matplotlib.pyplot as plt
+
     from math import sqrt
     from sklearn.metrics import mean_squared_error, r2_score
 
@@ -207,6 +226,7 @@ def validate_model(
 ) -> NamedTuple("output", [("deploy", str)]):
     import joblib
     import pandas as pd
+
     from math import sqrt
     from sklearn.metrics import mean_squared_error, r2_score
 
@@ -250,6 +270,7 @@ def register_model_to_superwise(
     timestamp: str,
 ) -> NamedTuple("output", [("superwise_model_id", int), ("superwise_version_id", int)]):
     import pandas as pd
+
     from datetime import datetime
     from superwise import Superwise
     from superwise.models.model import Model
@@ -275,7 +296,9 @@ def register_model_to_superwise(
         print(f"Model {model_name} already exists in Superwise")
         model_id = models[0].id
 
-    baseline_data = pd.read_csv(baseline.path).assign(ts=pd.Timestamp.now())
+    baseline_data = pd.read_csv(baseline.path).assign(
+        ts=pd.Timestamp.now() - pd.Timedelta(30, "d")
+    )
     # infer baseline data types and calculate metrics & distribution for features
     entities_dtypes = infer_dtype(df=baseline_data)
     entities_collection = sw.data_entity.summarise(
@@ -284,7 +307,7 @@ def register_model_to_superwise(
         specific_roles={
             "record_id": DataEntityRole.ID,
             "ts": DataEntityRole.TIMESTAMP,
-            "prediction": DataEntityRole.PREDICTION_VALUE,
+            "predictions": DataEntityRole.PREDICTION_VALUE,
             "price": DataEntityRole.LABEL,
         },
     )
@@ -384,7 +407,7 @@ def deploy_model_to_endpoint(
 
 
 @pipeline(
-    name="simple-ml-pipeline",
+    name=PIPELINE_NAME,
     description="An ml pipeline",
     pipeline_root=PIPELINE_ROOT,
 )
@@ -392,17 +415,17 @@ def ml_pipeline():
     raw_data = load_data()
     validated_data = validate_data(raw_data.outputs["dataset"])
     prepared_data = prepare_data(validated_data.outputs["validated_df"])
-    model_params = {"max_features": "auto", "n_estimators": 500}
     trained_model_task = train_model(
-        prepared_data.outputs["X_train"], prepared_data.outputs["y_train"], model_params
+        prepared_data.outputs["X_train"], prepared_data.outputs["y_train"]
     )
-    model = trained_model_task.outputs["model_artifact"]
-    x_test = prepared_data.outputs["X_test"]
-    y_test = prepared_data.outputs["y_test"]
-    evaluated_model = evaluate_model(model, x_test, y_test)
+    evaluated_model = evaluate_model(
+        trained_model_task.outputs["model_artifact"],
+        prepared_data.outputs["X_test"],
+        prepared_data.outputs["y_test"],
+    )
     validated_model = validate_model(
         new_model_metrics=evaluated_model.outputs["model_performance"],
-        new_model=model,
+        new_model=trained_model_task.outputs["model_artifact"],
         dataset=validated_data.outputs["validated_df"],
     )
     with dsl.Condition(
@@ -415,7 +438,7 @@ def ml_pipeline():
             validated_model.outputs["baseline"],
             TIMESTAMP,
         )
-        deploy_model_to_endpoint(
+        vertex_model = deploy_model_to_endpoint(
             PROJECT_ID,
             REGION,
             BUCKET_NAME,
@@ -425,8 +448,9 @@ def ml_pipeline():
             superwise_metadata.outputs["superwise_model_id"],
             superwise_metadata.outputs["superwise_version_id"],
             f"{REGION}-docker.pkg.dev/{PROJECT_ID}/tmls-repo/diamonds_predictor:latest",
-            model,
+            trained_model_task.outputs["model_artifact"],
         )
+        print(vertex_model.outputs["vertex_model"].uri)
 
 
 def upload_blob(bucket_name, source_file_name, destination_blob_name):
@@ -440,8 +464,20 @@ def upload_blob(bucket_name, source_file_name, destination_blob_name):
     print("File {} uploaded to {}.".format(source_file_name, destination_blob_name))
 
 
+def upload_blob(bucket_name, source_file_name, destination_blob_name):
+    """Uploads a file to the bucket."""
+    storage_client = storage.Client(project=PROJECT_ID)
+    bucket = storage_client.get_bucket(bucket_name)
+    blob = bucket.blob(destination_blob_name)
+
+    blob.upload_from_filename(source_file_name)
+
+    print("File {} uploaded to {}.".format(source_file_name, destination_blob_name))
+
+
 if __name__ == "__main__":
     ml_pipeline_file = "ml_pipeline.json"
+
     compiler.Compiler().compile(
         pipeline_func=ml_pipeline, package_path=ml_pipeline_file
     )
@@ -449,14 +485,8 @@ if __name__ == "__main__":
     job = aiplatform.PipelineJob(
         display_name="diamonds-predictor-pipeline",
         template_path=ml_pipeline_file,
-        job_id="ml-pipeline-{0}".format(TIMESTAMP),
+        job_id="e2e-pipeline-{0}".format(TIMESTAMP),
         enable_caching=True,
-    )
-
-    upload_blob(
-        bucket_name=BUCKET_NAME.strip("gs://"),
-        source_file_name=ml_pipeline_file,
-        destination_blob_name=ml_pipeline_file,
     )
 
     job.submit()
