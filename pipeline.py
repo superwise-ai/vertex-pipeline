@@ -10,14 +10,14 @@ from google.cloud.aiplatform import gapic as aip
 from kfp.v2 import compiler, dsl
 from kfp.v2.dsl import component, pipeline, Input, Output, Model, Metrics, Dataset, HTML
 
-USERNAME = "<lowercase user name>" # @param username
-BUCKET_NAME = "gs://<USED BUCKET>" # @param bucket name
-REGION = "<REGION>" # @param region
-PROJECT_ID = "<GCP PROJECT ID>" # @param project id
-PROJECT_NUMBER = "<GCP PROJECT NUMBER>" # @param project number
+USERNAME = "<lowercase user name>"  # @param username
+BUCKET_NAME = "gs://<USED BUCKET>"  # @param bucket name
+REGION = "<REGION>"  # @param region
+PROJECT_ID = "<GCP PROJECT ID>"  # @param project id
+PROJECT_NUMBER = "<GCP PROJECT NUMBER>"  # @param project number
 PIPELINE_NAME = f"tmls-workshop-diamonds-predictor-{USERNAME}"
-SUPERWISE_CLIENT_ID="<YOUR SUPERWISE ACCOUNT CLIENT ID>" # @param project number
-SUPERWISE_SECRET="<YOUR SUPERWISE ACCOUNT SECRET>"# @param project number
+SUPERWISE_CLIENT_ID = "<YOUR SUPERWISE ACCOUNT CLIENT ID>"  # @param project number
+SUPERWISE_SECRET = "<YOUR SUPERWISE ACCOUNT SECRET>"  # @param project number
 SUPERWISE_MODEL_NAME = "Regression - Diamonds Price Predictor"
 
 
@@ -150,10 +150,12 @@ def train_model(
     )
     # We now create a full pipeline, for preprocessing and training.
     # for training we selected a RandomForestRegressor
-    model_params = {"max_features": "auto",
-                    "n_estimators": 500,
-                    "max_depth": 9,
-                    "random_state": 42}
+    model_params = {
+        "max_features": "auto",
+        "n_estimators": 500,
+        "max_depth": 9,
+        "random_state": 42,
+    }
 
     regressor = RandomForestRegressor()
     regressor.set_params(**model_params)
@@ -192,7 +194,7 @@ def evaluate_model(
     import seaborn as sns
     import pandas as pd
     import matplotlib.pyplot as plt
-    
+
     from math import sqrt
     from sklearn.metrics import mean_squared_error, r2_score
 
@@ -237,7 +239,7 @@ def validate_model(
 ) -> NamedTuple("output", [("deploy", str)]):
     import joblib
     import pandas as pd
-    
+
     from math import sqrt
     from sklearn.metrics import mean_squared_error, r2_score
 
@@ -281,7 +283,7 @@ def register_model_to_superwise(
     timestamp: str,
 ) -> NamedTuple("output", [("superwise_model_id", int), ("superwise_version_id", int)]):
     import pandas as pd
-    
+
     from datetime import datetime
     from superwise import Superwise
     from superwise.models.model import Model
@@ -479,25 +481,24 @@ def upload_blob(bucket_name, source_file_name, destination_blob_name):
 
 if __name__ == "__main__":
     TIMESTAMP = datetime.now().strftime("%Y%m%d%H%M%S")
-    
+
     ml_pipeline_file = "ml_pipeline.json"
-    
+
     compiler.Compiler().compile(
         pipeline_func=ml_pipeline, package_path=ml_pipeline_file
     )
-    
+
     job = aiplatform.PipelineJob(
         display_name="diamonds-predictor-pipeline",
         template_path=ml_pipeline_file,
         job_id="e2e-pipeline-{}-{}".format(USERNAME, TIMESTAMP),
         enable_caching=True,
     )
-    
+
     upload_blob(
         bucket_name=BUCKET_NAME.strip("gs://"),
         source_file_name=ml_pipeline_file,
         destination_blob_name=ml_pipeline_file,
     )
-    
+
     job.submit()
-        
