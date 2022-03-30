@@ -42,7 +42,6 @@ while count:
     else:
         print(expensive_df.iloc[min_chunk:max_chunk]["price"].mean())
         for row_tuple in df.iloc[min_chunk:max_chunk].iterrows():
-            print(df.iloc[min_chunk:max_chunk]["price"].mean())
             row_dict = row_tuple[1].drop("price").to_dict()
             row_dict["record_id"] = row_tuple[1].name
             row_dict["ts"] = str(pd.Timestamp.now() - pd.Timedelta(count, "d"))

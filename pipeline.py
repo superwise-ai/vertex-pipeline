@@ -1,26 +1,34 @@
-from nis import cat
+# -*- coding: utf-8 -*-
+import os
+import sys
+
 from typing import List, NamedTuple
 from datetime import datetime
 
+from google.cloud import aiplatform, storage
+from google.cloud.aiplatform import gapic as aip
 from kfp.v2 import compiler, dsl
 from kfp.v2.dsl import component, pipeline, Input, Output, Model, Metrics, Dataset, HTML
 
-from google.cloud import aiplatform, storage
-from sklearn.impute import SimpleImputer
+USERNAME = "<lowercase user name>" # @param username
+BUCKET_NAME = "gs://<USED BUCKET>" # @param bucket name
+REGION = "<REGION>" # @param region
+PROJECT_ID = "<GCP PROJECT ID>" # @param project id
+PROJECT_NUMBER = "<GCP PROJECT NUMBER>" # @param project number
+PIPELINE_NAME = f"tmls-workshop-diamonds-predictor-{USERNAME}"
+SUPERWISE_CLIENT_ID="<YOUR SUPERWISE ACCOUNT CLIENT ID>" # @param project number
+SUPERWISE_SECRET="<YOUR SUPERWISE ACCOUNT SECRET>"# @param project number
+SUPERWISE_MODEL_NAME = "Regression - Diamonds Price Predictor"
 
 
-REGION = "us-central1"
-PROJECT_ID = "tmls-demo"
-BUCKET_NAME = f"gs://tmls-demo-bucket-pipeline"
-TIMESTAMP = datetime.now().strftime("%Y%m%d%H%M%S")
+aiplatform.init(project=PROJECT_ID, location=REGION, staging_bucket=BUCKET_NAME)
+
+"""#### Vertex definitions"""
 
 API_ENDPOINT = "{}-aiplatform.googleapis.com".format(REGION)
-PIPELINE_ROOT = "{}/pipeline_root/demo_2".format(BUCKET_NAME)
+PIPELINE_ROOT = "{}/{}_pipeline_root/workshop".format(BUCKET_NAME, USERNAME)
 
-SUPERWISE_CLIENT_ID = "40bddc7a-c047-4e74-afee-101be24d14c2"
-SUPERWISE_SECRET = "67d954f2-cb52-4cc9-915e-b7399e5d85ab"
-
-
+#### Load the data Component
 @component(packages_to_install=["pandas"])
 def load_data(dataset: Output[Dataset]):
     import pandas as pd
@@ -31,6 +39,7 @@ def load_data(dataset: Output[Dataset]):
     df.to_csv(dataset.path, index=False)
 
 
+#### Validate the data Component
 @component(packages_to_install=["pandas"])
 def validate_data(df: Input[Dataset], validated_df: Output[Dataset]):
     import pandas as pd
@@ -63,6 +72,7 @@ def validate_data(df: Input[Dataset], validated_df: Output[Dataset]):
     return df.to_csv(validated_df.path, index=False)
 
 
+#### Prepare data for training Component
 @component(packages_to_install=["scikit-learn==1.0.2", "pandas"])
 def prepare_data(
     df: Input[Dataset],
@@ -88,6 +98,7 @@ def prepare_data(
     y_test_data.to_csv(y_test.path, index=False)
 
 
+#### Train model Component
 @component(packages_to_install=["scikit-learn==1.0.2", "pandas", "joblib"])
 def train_model(
     X_train: Input[Dataset],
@@ -139,12 +150,10 @@ def train_model(
     )
     # We now create a full pipeline, for preprocessing and training.
     # for training we selected a RandomForestRegressor
-    model_params = {
-        "max_features": "auto",
-        "n_estimators": 500,
-        "max_depth": 9,
-        "random_state": 42,
-    }
+    model_params = {"max_features": "auto",
+                    "n_estimators": 500,
+                    "max_depth": 9,
+                    "random_state": 42}
 
     regressor = RandomForestRegressor()
     regressor.set_params(**model_params)
@@ -154,7 +163,7 @@ def train_model(
     )
     # For Workshop time efficiency we will use 1-fold cross validation
     score = cross_val_score(
-        pipeline, X, y, cv=10, scoring="neg_root_mean_squared_error", n_jobs=-1
+        pipeline, X, y, cv=2, scoring="neg_root_mean_squared_error", n_jobs=-1
     ).mean()
     print("finished cross val")
     # Now we fit all our data to the classifier.
@@ -166,6 +175,7 @@ def train_model(
     model_artifact.metadata["train_score"] = score
 
 
+#### Evaluate the model Component
 @component(
     packages_to_install=["scikit-learn==1.0.2", "pandas", "seaborn", "matplotlib"]
 )
@@ -182,7 +192,7 @@ def evaluate_model(
     import seaborn as sns
     import pandas as pd
     import matplotlib.pyplot as plt
-
+    
     from math import sqrt
     from sklearn.metrics import mean_squared_error, r2_score
 
@@ -216,6 +226,7 @@ def evaluate_model(
         f.write(html_content)
 
 
+#### Validate the model Component
 @component(packages_to_install=["scikit-learn==1.0.2", "pandas"])
 def validate_model(
     new_model_metrics: Input[Metrics],
@@ -226,7 +237,7 @@ def validate_model(
 ) -> NamedTuple("output", [("deploy", str)]):
     import joblib
     import pandas as pd
-
+    
     from math import sqrt
     from sklearn.metrics import mean_squared_error, r2_score
 
@@ -258,7 +269,7 @@ def validate_model(
     ):
         return ("true",)
 
-    return ("true",)
+    return ("false",)
 
 
 @component(packages_to_install=["superwise", "pandas"])
@@ -270,7 +281,7 @@ def register_model_to_superwise(
     timestamp: str,
 ) -> NamedTuple("output", [("superwise_model_id", int), ("superwise_version_id", int)]):
     import pandas as pd
-
+    
     from datetime import datetime
     from superwise import Superwise
     from superwise.models.model import Model
@@ -331,6 +342,7 @@ def register_model_to_superwise(
     return (model_id, new_version.id)
 
 
+#### Deploy to Endpoint Component
 @component(
     packages_to_install=[
         "google-cloud-aiplatform==1.7.0",
@@ -406,6 +418,7 @@ def deploy_model_to_endpoint(
     vertex_model.uri = model_deploy.resource_name
 
 
+#### End to Endpoint Pipeline
 @pipeline(
     name=PIPELINE_NAME,
     description="An ml pipeline",
@@ -432,7 +445,7 @@ def ml_pipeline():
         validated_model.outputs["deploy"] == "true", name="deploy_decision"
     ):
         superwise_metadata = register_model_to_superwise(
-            "Diamonds Model Predictor",
+            SUPERWISE_MODEL_NAME,
             SUPERWISE_CLIENT_ID,
             SUPERWISE_SECRET,
             validated_model.outputs["baseline"],
@@ -450,20 +463,9 @@ def ml_pipeline():
             f"{REGION}-docker.pkg.dev/{PROJECT_ID}/tmls-repo/diamonds_predictor:latest",
             trained_model_task.outputs["model_artifact"],
         )
-        print(vertex_model.outputs["vertex_model"].uri)
 
 
-def upload_blob(bucket_name, source_file_name, destination_blob_name):
-    """Uploads a file to the bucket."""
-    storage_client = storage.Client()
-    bucket = storage_client.get_bucket(bucket_name)
-    blob = bucket.blob(destination_blob_name)
-
-    blob.upload_from_filename(source_file_name)
-
-    print("File {} uploaded to {}.".format(source_file_name, destination_blob_name))
-
-
+#### Execute End to Endpoint pipeline
 def upload_blob(bucket_name, source_file_name, destination_blob_name):
     """Uploads a file to the bucket."""
     storage_client = storage.Client(project=PROJECT_ID)
@@ -476,17 +478,26 @@ def upload_blob(bucket_name, source_file_name, destination_blob_name):
 
 
 if __name__ == "__main__":
+    TIMESTAMP = datetime.now().strftime("%Y%m%d%H%M%S")
+    
     ml_pipeline_file = "ml_pipeline.json"
-
+    
     compiler.Compiler().compile(
         pipeline_func=ml_pipeline, package_path=ml_pipeline_file
     )
-
+    
     job = aiplatform.PipelineJob(
         display_name="diamonds-predictor-pipeline",
         template_path=ml_pipeline_file,
-        job_id="e2e-pipeline-{0}".format(TIMESTAMP),
+        job_id="e2e-pipeline-{}-{}".format(USERNAME, TIMESTAMP),
         enable_caching=True,
     )
-
+    
+    upload_blob(
+        bucket_name=BUCKET_NAME.strip("gs://"),
+        source_file_name=ml_pipeline_file,
+        destination_blob_name=ml_pipeline_file,
+    )
+    
     job.submit()
+        
