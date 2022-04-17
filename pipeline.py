@@ -15,7 +15,8 @@ BUCKET_NAME = "gs://<USED BUCKET>"  # @param bucket name
 REGION = "<REGION>"  # @param region
 PROJECT_ID = "<GCP PROJECT ID>"  # @param project id
 PROJECT_NUMBER = "<GCP PROJECT NUMBER>"  # @param project number
-PIPELINE_NAME = f"tmls-workshop-diamonds-predictor-{USERNAME}"
+PIPELINE_NAME = f"diamonds-predictor-serving-pipeline-{USERNAME}"
+ARTIFACT_REGISTRY_NAME = "diamonds-predictor-repo"
 SUPERWISE_CLIENT_ID = "<YOUR SUPERWISE ACCOUNT CLIENT ID>"  # @param project number
 SUPERWISE_SECRET = "<YOUR SUPERWISE ACCOUNT SECRET>"  # @param project number
 SUPERWISE_MODEL_NAME = "Regression - Diamonds Price Predictor"
@@ -23,12 +24,12 @@ SUPERWISE_MODEL_NAME = "Regression - Diamonds Price Predictor"
 
 aiplatform.init(project=PROJECT_ID, location=REGION, staging_bucket=BUCKET_NAME)
 
-"""#### Vertex definitions"""
-
+""" Vertex definitions """
 API_ENDPOINT = "{}-aiplatform.googleapis.com".format(REGION)
 PIPELINE_ROOT = "{}/{}_pipeline_root/workshop".format(BUCKET_NAME, USERNAME)
 
-#### Load the data Component
+
+# Load the data Component
 @component(packages_to_install=["pandas"])
 def load_data(dataset: Output[Dataset]):
     import pandas as pd
@@ -39,7 +40,7 @@ def load_data(dataset: Output[Dataset]):
     df.to_csv(dataset.path, index=False)
 
 
-#### Validate the data Component
+# Validate the data Component
 @component(packages_to_install=["pandas"])
 def validate_data(df: Input[Dataset], validated_df: Output[Dataset]):
     import pandas as pd
@@ -72,7 +73,7 @@ def validate_data(df: Input[Dataset], validated_df: Output[Dataset]):
     return df.to_csv(validated_df.path, index=False)
 
 
-#### Prepare data for training Component
+# Prepare data for training Component
 @component(packages_to_install=["scikit-learn==1.0.2", "pandas"])
 def prepare_data(
     df: Input[Dataset],
@@ -98,7 +99,7 @@ def prepare_data(
     y_test_data.to_csv(y_test.path, index=False)
 
 
-#### Train model Component
+# Train model Component
 @component(packages_to_install=["scikit-learn==1.0.2", "pandas", "joblib"])
 def train_model(
     X_train: Input[Dataset],
@@ -177,7 +178,7 @@ def train_model(
     model_artifact.metadata["train_score"] = score
 
 
-#### Evaluate the model Component
+# Evaluate the model Component
 @component(
     packages_to_install=["scikit-learn==1.0.2", "pandas", "seaborn", "matplotlib"]
 )
@@ -228,7 +229,7 @@ def evaluate_model(
         f.write(html_content)
 
 
-#### Validate the model Component
+# Validate the model Component
 @component(packages_to_install=["scikit-learn==1.0.2", "pandas"])
 def validate_model(
     new_model_metrics: Input[Metrics],
@@ -344,7 +345,7 @@ def register_model_to_superwise(
     return (model_id, new_version.id)
 
 
-#### Deploy to Endpoint Component
+# Deploy to Endpoint Component
 @component(
     packages_to_install=[
         "google-cloud-aiplatform==1.7.0",
@@ -420,7 +421,7 @@ def deploy_model_to_endpoint(
     vertex_model.uri = model_deploy.resource_name
 
 
-#### End to Endpoint Pipeline
+# End to Endpoint Pipeline
 @pipeline(
     name=PIPELINE_NAME,
     description="An ml pipeline",
@@ -451,23 +452,23 @@ def ml_pipeline():
             SUPERWISE_CLIENT_ID,
             SUPERWISE_SECRET,
             validated_model.outputs["baseline"],
-            TIMESTAMP,
+            datetime.now().strftime("%Y%m%d%H%M%S"),
         )
         vertex_model = deploy_model_to_endpoint(
             PROJECT_ID,
             REGION,
             BUCKET_NAME,
-            TIMESTAMP,
+            datetime.now().strftime("%Y%m%d%H%M%S"),
             SUPERWISE_CLIENT_ID,
             SUPERWISE_SECRET,
             superwise_metadata.outputs["superwise_model_id"],
             superwise_metadata.outputs["superwise_version_id"],
-            f"{REGION}-docker.pkg.dev/{PROJECT_ID}/tmls-repo/diamonds_predictor:latest",
+            f"{REGION}-docker.pkg.dev/{PROJECT_ID}/{ARTIFACT_REGISTRY_NAME}/diamonds_predictor:latest",
             trained_model_task.outputs["model_artifact"],
         )
 
 
-#### Execute End to Endpoint pipeline
+# Execute End to Endpoint pipeline
 def upload_blob(bucket_name, source_file_name, destination_blob_name):
     """Uploads a file to the bucket."""
     storage_client = storage.Client(project=PROJECT_ID)

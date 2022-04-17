@@ -1,4 +1,4 @@
-# ML-pipeline - Toronto Machine Learning Summit Workshop
+# ML-pipeline - Superwise Workshop
 Simple pipeline flow, using [Diamonds Dataset](https://www.kaggle.com/datasets/shivam2503/diamonds) to demonstrate Continuous training paradigm.
 
 Prerequisites:
